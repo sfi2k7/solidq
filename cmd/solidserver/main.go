@@ -13,6 +13,7 @@ func main() {
 	version := flag.Bool("version", false, "Show version information")
 	if *version {
 		fmt.Println("SolidQ version 0.0.2")
+		return
 	}
 
 	flag.Parse()
