@@ -119,6 +119,44 @@ func (q *Que[T]) Count(channel string) (int, error) {
 	return count, err
 }
 
+func (q *Que[T]) PopWithCount(channel string, count int) ([]*Work[T], error) {
+	if q.db == nil {
+		return nil, errors.New("database is not open")
+	}
+
+	var works []*Work[T]
+	err := q.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket([]byte(channel))
+		if b == nil {
+			return nil
+		}
+
+		c := b.Cursor()
+		for i := 0; i < count; i++ {
+			k, v := c.First()
+			if k == nil {
+				break
+			}
+
+			work := &Work[T]{}
+			work.Id = string(k)
+			err := json.Unmarshal(v, &work.Data)
+			if err != nil {
+				return err
+			}
+
+			works = append(works, work)
+			err = b.Delete(k)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+
+	return works, err
+}
+
 func (q *Que[T]) Pop(channel string) (*Work[T], error) {
 	if q.db == nil {
 		return &Work[T]{}, errors.New("database is not open")

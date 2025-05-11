@@ -1,12 +1,14 @@
 package solidq
 
 import (
+	"strconv"
+
 	"github.com/sfi2k7/blueweb"
 )
 
 type response[T any] struct {
 	Success  bool           `json:"success"`
-	Work     *Work[T]       `json:"work,omitempty"`
+	Items    []*Work[T]     `json:"work,omitempty"`
 	Error    string         `json:"error"`
 	Count    int            `json:"count,omitempty"`
 	Channels map[string]int `json:"channels,omitempty"`
@@ -42,26 +44,27 @@ func StartQueServer[T any](dbpath string, port int) error {
 		ctx.Json(response[T]{Success: true})
 	})
 
-	api.Get("/solidq/pop", func(ctx *blueweb.Context) {
+	api.Get("/solidq/pop/:count", func(ctx *blueweb.Context) {
 		channel := ctx.Query("channel")
+		count := ctx.Params("count")
 
-		work, err := que.Pop(channel)
+		co, _ := strconv.Atoi(count)
+		if co < 1 {
+			co = 1
+		}
+
+		items, err := que.PopWithCount(channel, co)
 		if err != nil {
 			ctx.Json(response[T]{Error: err.Error()})
 			return
 		}
 
-		if work == nil {
+		if items == nil {
 			ctx.Json(response[T]{Success: false})
 			return
 		}
 
-		if len(work.Id) == 0 {
-			ctx.Json(response[T]{Success: false})
-			return
-		}
-
-		ctx.Json(response[T]{Success: true, Work: work})
+		ctx.Json(response[T]{Success: true, Items: items})
 	})
 
 	api.Get("/solidq/count", func(ctx *blueweb.Context) {

@@ -18,7 +18,7 @@ import (
 // serverResponse is the generic structure for responses from the SolidQ server.
 type serverResponse[T any] struct {
 	Success  bool           `json:"success"`
-	Work     *Work[T]       `json:"work,omitempty"`
+	Work     []*Work[T]     `json:"work,omitempty"`
 	Error    string         `json:"error,omitempty"`
 	Count    int            `json:"count,omitempty"`
 	Channels map[string]int `json:"channels,omitempty"`
@@ -242,15 +242,20 @@ func (c *Client[T]) Push(channel string, work *Work[T]) error {
 	return nil
 }
 
-func (c *Client[T]) Pop(channel string) (*Work[T], error) {
+func (c *Client[T]) Pop(channel string, count ...int) ([]*Work[T], error) {
 	if channel == "" {
 		return nil, fmt.Errorf("channel cannot be empty")
+	}
+
+	co := "1"
+	if len(count) > 0 {
+		co = fmt.Sprint(count[0])
 	}
 
 	queryParams := map[string]string{
 		"channel": channel,
 	}
-	urlStr := c.buildURL("/solidq/pop", queryParams)
+	urlStr := c.buildURL("/solidq/pop/"+co, queryParams)
 
 	sr, err := c.doRequest(http.MethodGet, urlStr, nil)
 	if err != nil {
@@ -267,7 +272,7 @@ func (c *Client[T]) Pop(channel string) (*Work[T], error) {
 		return nil, fmt.Errorf("pop operation failed on server: %s", sr.Error)
 	}
 
-	if sr.Work == nil || sr.Work.Id == "" {
+	if sr.Work == nil {
 		return nil, fmt.Errorf("pop operation succeeded but no work item was returned")
 	}
 	return sr.Work, nil
@@ -401,12 +406,15 @@ func (c *Client[T]) WorkLoop(
 		}
 
 		if work != nil {
-			// fmt.Printf("WorkLoop on channel '%s' received work: ID=%s\n", channel, work.ID)
-			workerCtx := newWorkerContext(work, c)
-			// Execute the worker function.
-			// Consider adding panic recovery here if workerFunc is untrusted.
-			// For now, if workerFunc panics, WorkLoop will panic.
-			workerFunc(workerCtx)
+			for _, w := range work {
+				// fmt.Printf("WorkLoop on channel '%s' received work: ID=%s\n", channel, work.ID)
+				workerCtx := newWorkerContext(w, c)
+				// Execute the worker function.
+				// Consider adding panic recovery here if workerFunc is untrusted.
+				// For now, if workerFunc panics, WorkLoop will panic.
+
+				workerFunc(workerCtx)
+			}
 			// After workerFunc completes, the loop continues to Pop immediately.
 		} else {
 			// No work found (queue is empty), wait before polling again
