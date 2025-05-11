@@ -19,7 +19,12 @@ func main() {
 	flag.Parse()
 
 	fmt.Println("Starting SolidQ server...")
-	err := solidq.StartQueServer[solidq.Payload](*path, *port)
+	options := &solidq.SeverOptions{
+		Path: *path,
+		Port: *port,
+	}
+
+	err := solidq.StartQueServer[solidq.Payload](options)
 	if err != nil {
 		panic(err)
 	}

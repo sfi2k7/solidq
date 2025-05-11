@@ -14,15 +14,57 @@ type response[T any] struct {
 	Channels map[string]int `json:"channels,omitempty"`
 }
 
-func StartQueServer[T any](dbpath string, port int) error {
+type SeverOptions struct {
+	Path        string
+	Port        int
+	CrossOrigin bool
+	Auth        []blueweb.Middleware
+}
 
-	que, err := OpenQue[T](dbpath)
+var defaultOptions = SeverOptions{
+	Path:        "solidq.db",
+	Port:        8080,
+	CrossOrigin: true,
+	Auth:        nil,
+}
+
+func StartQueServer[T any](options *SeverOptions) error {
+
+	if options == nil {
+		options = &defaultOptions
+	}
+
+	middle := func(fn func(ctx *blueweb.Context)) blueweb.Handler {
+		return func(ctx *blueweb.Context) {
+			if options.CrossOrigin {
+				ctx.SetHeader("Content-Type", "application/json")
+				ctx.SetHeader("Access-Control-Allow-Origin", "*")
+				ctx.SetHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				ctx.SetHeader("Access-Control-Allow-Headers", "Content-Type, Authorization")
+				if ctx.Method() == "OPTIONS" {
+					ctx.Status(200)
+					return
+				}
+			}
+
+			if len(options.Auth) > 0 {
+				success := options.Auth[0](ctx)
+				if !success {
+					ctx.Json(response[T]{Error: "Unauthorized"})
+					return
+				}
+			}
+			fn(ctx)
+		}
+	}
+
+	que, err := OpenQue[T](options.Path)
 	if err != nil {
 		return err
 	}
 
 	api := blueweb.NewRouter()
-	api.Post("/solidq/push", func(ctx *blueweb.Context) {
+	api.Post("/solidq/push", middle(func(ctx *blueweb.Context) {
 		channel := ctx.Query("channel")
 		workid := ctx.Query("id")
 		var payload T
@@ -42,9 +84,9 @@ func StartQueServer[T any](dbpath string, port int) error {
 		}
 
 		ctx.Json(response[T]{Success: true})
-	})
+	}))
 
-	api.Get("/solidq/pop/:count", func(ctx *blueweb.Context) {
+	api.Get("/solidq/pop/:count", middle(func(ctx *blueweb.Context) {
 		channel := ctx.Query("channel")
 		count := ctx.Params("count")
 
@@ -65,9 +107,9 @@ func StartQueServer[T any](dbpath string, port int) error {
 		}
 
 		ctx.Json(response[T]{Success: true, Items: items})
-	})
+	}))
 
-	api.Get("/solidq/count", func(ctx *blueweb.Context) {
+	api.Get("/solidq/count", middle(func(ctx *blueweb.Context) {
 		channel := ctx.Query("channel")
 		count, err := que.Count(channel)
 		if err != nil {
@@ -75,9 +117,9 @@ func StartQueServer[T any](dbpath string, port int) error {
 			return
 		}
 		ctx.Json(response[T]{Success: true, Count: count})
-	})
+	}))
 
-	api.Get("/solidq/reset", func(ctx *blueweb.Context) {
+	api.Get("/solidq/reset", middle(func(ctx *blueweb.Context) {
 		channel := ctx.Query("channel")
 		err := que.ResetChannel(channel)
 		if err != nil {
@@ -85,18 +127,18 @@ func StartQueServer[T any](dbpath string, port int) error {
 			return
 		}
 		ctx.Json(response[T]{Success: true})
-	})
+	}))
 
-	api.Get("/solidq/channels", func(ctx *blueweb.Context) {
+	api.Get("/solidq/channels", middle(func(ctx *blueweb.Context) {
 		channels, err := que.ListChannelsWithCount()
 		if err != nil {
 			ctx.Json(response[T]{Error: err.Error()})
 			return
 		}
 		ctx.Json(response[T]{Success: true, Channels: channels})
-	})
+	}))
 
-	api.Config().SetDev(true).SetPort(port).StopOnInterrupt()
+	api.Config().SetDev(true).SetPort(options.Port).StopOnInterrupt()
 
 	api.StartServer()
 
