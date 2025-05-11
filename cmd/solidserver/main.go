@@ -10,6 +10,11 @@ import (
 func main() {
 	path := flag.String("db", "solidq.db", "Path to the database file")
 	port := flag.Int("port", 8080, "Port to listen on")
+	version := flag.Bool("version", false, "Show version information")
+	if *version {
+		fmt.Println("SolidQ version 0.0.2")
+	}
+
 	flag.Parse()
 
 	fmt.Println("Starting SolidQ server...")
