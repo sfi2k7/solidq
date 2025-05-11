@@ -19,6 +19,7 @@ type SeverOptions struct {
 	Port        int
 	CrossOrigin bool
 	Auth        []blueweb.Middleware
+	Secret      string
 }
 
 var defaultOptions = SeverOptions{
@@ -36,6 +37,7 @@ func StartQueServer[T any](options *SeverOptions) error {
 
 	middle := func(fn func(ctx *blueweb.Context)) blueweb.Handler {
 		return func(ctx *blueweb.Context) {
+			//Cross-Origin Resource Sharing (CORS)
 			if options.CrossOrigin {
 				ctx.SetHeader("Content-Type", "application/json")
 				ctx.SetHeader("Access-Control-Allow-Origin", "*")
@@ -47,6 +49,29 @@ func StartQueServer[T any](options *SeverOptions) error {
 				}
 			}
 
+			//Simple Authentication
+			if options.Secret != "" {
+				var token = ctx.Query("secret")
+				if token == "" {
+					token = ctx.Query("api_key")
+					if token == "" {
+						token = ctx.Query("key")
+						if token == "" {
+							token = ctx.Query("access_token")
+							if token == "" {
+								token = ctx.Header("Authorization")
+							}
+						}
+					}
+				}
+
+				if len(token) == 0 || token != options.Secret {
+					ctx.Json(response[T]{Error: "Unauthorized"})
+					return
+				}
+			}
+
+			//Custom Authentication
 			if len(options.Auth) > 0 {
 				success := options.Auth[0](ctx)
 				if !success {
@@ -54,6 +79,8 @@ func StartQueServer[T any](options *SeverOptions) error {
 					return
 				}
 			}
+
+			//Call the handler
 			fn(ctx)
 		}
 	}
@@ -64,6 +91,7 @@ func StartQueServer[T any](options *SeverOptions) error {
 	}
 
 	api := blueweb.NewRouter()
+
 	api.Post("/solidq/push", middle(func(ctx *blueweb.Context) {
 		channel := ctx.Query("channel")
 		workid := ctx.Query("id")

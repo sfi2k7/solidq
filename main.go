@@ -21,6 +21,7 @@ func OpenQue[T any](path string) (*Que[T], error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return &Que[T]{db: db}, nil
 }
 
