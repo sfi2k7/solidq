@@ -13,8 +13,6 @@ type response[T any] struct {
 }
 
 func StartQueServer[T any](dbpath string, port int) error {
-	// exitch := make(chan os.Signal, 2)
-	// signal.Notify(exitch, os.Interrupt, syscall.SIGTERM)
 
 	que, err := OpenQue[T](dbpath)
 	if err != nil {
