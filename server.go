@@ -1,36 +1,75 @@
 package solidq
 
 import (
+	"fmt"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/sfi2k7/blueweb"
 )
 
-type response[T any] struct {
+type response struct {
 	Success  bool           `json:"success"`
-	Items    []*Work[T]     `json:"work,omitempty"`
+	Ids      []string       `json:"ids,omitempty"`
 	Error    string         `json:"error"`
 	Count    int            `json:"count,omitempty"`
 	Channels map[string]int `json:"channels,omitempty"`
+	Apps     []string       `json:"apps,omitempty"`
+	IsPaused bool           `json:"isPaused"`
+	Took     string         `json:"took"`
 }
 
 type SeverOptions struct {
-	Path        string
+	Appname     string
+	RootPath    string
 	Port        int
 	CrossOrigin bool
-	Auth        []blueweb.Middleware
+	Auth        blueweb.Middleware
 	Secret      string
 }
 
 var defaultOptions = SeverOptions{
-	Path:        "solidq.db",
+	Appname:     "core",
 	Port:        8080,
 	CrossOrigin: true,
-	Auth:        nil,
+	Auth:        func(c *blueweb.Context) bool { return true }, //default auth always returns true
+	Secret:      "secret",
 }
 
-func StartQueServer[T any](options *SeverOptions) error {
+func channeltoappchannel(channel string) (app string, ch string) {
+	//example: "core:channel1" -> app="core", ch="channel1"
+	parts := strings.Split(channel, ":")
+	if len(parts) == 2 {
+		return parts[0], parts[1]
+	}
 
+	return "core", channel
+}
+
+//app:channel:id
+
+func extractaci(str string) (app string, channel string, id string) {
+	//example: "core:channel:id" -> app="core", channel="channel", id="id"
+
+	parts := strings.Split(str, ":")
+	if len(parts) == 1 {
+		return "core", "default", parts[0]
+	}
+
+	if len(parts) == 2 {
+		return "core", parts[0], parts[1]
+	}
+
+	if len(parts) == 3 {
+		return parts[0], parts[1], parts[2]
+	}
+
+	return "core", "default", str
+}
+
+func StartQueServer(options *SeverOptions) error {
+	isPaused := false
 	if options == nil {
 		options = &defaultOptions
 	}
@@ -66,104 +105,192 @@ func StartQueServer[T any](options *SeverOptions) error {
 				}
 
 				if len(token) == 0 || token != options.Secret {
-					ctx.Json(response[T]{Error: "Unauthorized"})
+					ctx.Json(response{Error: "Unauthorized"})
 					return
 				}
 			}
 
 			//Custom Authentication
-			if len(options.Auth) > 0 {
-				success := options.Auth[0](ctx)
+			if options.Auth != nil {
+				success := options.Auth(ctx)
 				if !success {
-					ctx.Json(response[T]{Error: "Unauthorized"})
+					ctx.Json(response{Error: "Unauthorized"})
 					return
 				}
 			}
 
+			ctx.State = time.Now()
 			//Call the handler
 			fn(ctx)
 		}
 	}
 
-	que, err := OpenQue[T](options.Path)
-	if err != nil {
-		return err
+	pauserfunc := func(c *blueweb.Context) {
+		c.Json(response{IsPaused: true})
+	}
+
+	inttotimesince := func(t interface{}) string {
+		return time.Since(t.(time.Time)).String()
 	}
 
 	api := blueweb.NewRouter()
 
-	api.Post("/solidq/push", middle(func(ctx *blueweb.Context) {
-		channel := ctx.Query("channel")
-		workid := ctx.Query("id")
-		var payload T
-		err = ctx.ParseBody(&payload)
-		if err != nil {
-			ctx.Json(response[T]{Error: err.Error()})
-			return
-		}
-
-		err = que.Push(channel, Work[T]{
-			Id:   workid,
-			Data: payload,
-		})
-		if err != nil {
-			ctx.Json(response[T]{Error: err.Error()})
-			return
-		}
-
-		ctx.Json(response[T]{Success: true})
+	api.Get("/solidq/pause", middle(func(ctx *blueweb.Context) {
+		isPaused = true
+		ctx.Json(response{Success: true, Took: inttotimesince(ctx.State)})
 	}))
 
-	api.Get("/solidq/pop/:count", middle(func(ctx *blueweb.Context) {
-		channel := ctx.Query("channel")
+	api.Get("/solidq/unpause", middle(func(ctx *blueweb.Context) {
+		isPaused = false
+		ctx.Json(response{Success: true, Took: inttotimesince(ctx.State)})
+	}))
+
+	api.Post("/solidq/push/:item", middle(func(ctx *blueweb.Context) {
+		if isPaused {
+			pauserfunc(ctx)
+			return
+		}
+
+		app, channel, workid := extractaci(ctx.Params("item"))
+
+		localqueue, err := enusureQ(app)
+		if err != nil {
+			ctx.Json(response{Error: err.Error(), Took: inttotimesince(ctx.State)})
+			return
+		}
+
+		err = localqueue.Push(channel, workid)
+
+		if err != nil {
+			ctx.Json(response{Error: err.Error(), Took: inttotimesince(ctx.State)})
+			return
+		}
+
+		ctx.Json(response{Success: true, Took: inttotimesince(ctx.State)})
+	}))
+
+	api.Get("/solidq/pop/:channel/:count", middle(func(ctx *blueweb.Context) {
+		if isPaused {
+			pauserfunc(ctx)
+			return
+		}
+
+		channel := ctx.Params("channel")
 		count := ctx.Params("count")
+
+		fmt.Println("Pop request for channel:", channel, "with count:", count)
+		var app string
+		app, channel = channeltoappchannel(channel)
+
+		localqueue, err := enusureQ(app)
+		if err != nil {
+			ctx.Json(response{Error: err.Error(), Took: inttotimesince(ctx.State)})
+			return
+		}
 
 		co, _ := strconv.Atoi(count)
 		if co < 1 {
 			co = 1
 		}
 
-		items, err := que.PopWithCount(channel, co)
+		ids, err := localqueue.PopWithCount(channel, co)
 		if err != nil {
-			ctx.Json(response[T]{Error: err.Error()})
+			ctx.Json(response{Error: err.Error(), Took: inttotimesince(ctx.State)})
 			return
 		}
 
-		if items == nil {
-			ctx.Json(response[T]{Success: false})
+		if ids == nil {
+			ctx.Json(response{Success: true, Took: inttotimesince(ctx.State)})
 			return
 		}
 
-		ctx.Json(response[T]{Success: true, Items: items})
+		ctx.Json(response{Success: true, Ids: ids, Took: inttotimesince(ctx.State)})
 	}))
 
-	api.Get("/solidq/count", middle(func(ctx *blueweb.Context) {
+	api.Get("/solidq/listapps/:physical", middle(func(ctx *blueweb.Context) {
+		if isPaused {
+			pauserfunc(ctx)
+			return
+		}
+
+		isPhysical := ctx.Params("physical") == "true"
+		apps, err := listapps(isPhysical)
+		if err != nil {
+			ctx.Json(response{Error: err.Error(), Took: inttotimesince(ctx.State)})
+			return
+		}
+
+		ctx.Json(response{Success: true, Apps: apps})
+	}))
+
+	api.Get("/solidq/count/:channel/:count", middle(func(ctx *blueweb.Context) {
+		if isPaused {
+			pauserfunc(ctx)
+			return
+		}
+
+		channel := ctx.Params("channel")
+		var app string
+		app, channel = channeltoappchannel(channel)
+
+		localqueue, err := enusureQ(app)
+		if err != nil {
+			ctx.Json(response{Error: err.Error(), Took: inttotimesince(ctx.State)})
+			return
+		}
+
+		count, err := localqueue.Count(channel)
+		if err != nil {
+			ctx.Json(response{Error: err.Error()})
+			return
+		}
+		ctx.Json(response{Success: true, Count: count, Took: inttotimesince(ctx.State)})
+	}))
+
+	api.Get("/solidq/reset/:channel", middle(func(ctx *blueweb.Context) {
+		if isPaused {
+			pauserfunc(ctx)
+			return
+		}
+
 		channel := ctx.Query("channel")
-		count, err := que.Count(channel)
+		var app string
+		app, channel = channeltoappchannel(channel)
+
+		localqueue, err := enusureQ(app)
 		if err != nil {
-			ctx.Json(response[T]{Error: err.Error()})
+			ctx.Json(response{Error: err.Error(), Took: inttotimesince(ctx.State)})
 			return
 		}
-		ctx.Json(response[T]{Success: true, Count: count})
+
+		err = localqueue.ResetChannel(channel)
+		if err != nil {
+			ctx.Json(response{Error: err.Error(), Took: inttotimesince(ctx.State)})
+			return
+		}
+		ctx.Json(response{Success: true, Took: inttotimesince(ctx.State)})
 	}))
 
-	api.Get("/solidq/reset", middle(func(ctx *blueweb.Context) {
-		channel := ctx.Query("channel")
-		err := que.ResetChannel(channel)
-		if err != nil {
-			ctx.Json(response[T]{Error: err.Error()})
+	api.Get("/solidq/channels/:appname", middle(func(ctx *blueweb.Context) {
+		if isPaused {
+			pauserfunc(ctx)
 			return
 		}
-		ctx.Json(response[T]{Success: true})
-	}))
 
-	api.Get("/solidq/channels", middle(func(ctx *blueweb.Context) {
-		channels, err := que.ListChannelsWithCount()
+		app := ctx.Params("appname")
+
+		localqueue, err := enusureQ(app)
 		if err != nil {
-			ctx.Json(response[T]{Error: err.Error()})
+			ctx.Json(response{Error: err.Error(), Took: inttotimesince(ctx.State)})
 			return
 		}
-		ctx.Json(response[T]{Success: true, Channels: channels})
+
+		channels, err := localqueue.ListChannelsWithCount()
+		if err != nil {
+			ctx.Json(response{Error: err.Error(), Took: inttotimesince(ctx.State)})
+			return
+		}
+		ctx.Json(response{Success: true, Channels: channels, Took: inttotimesince(ctx.State)})
 	}))
 
 	api.Config().SetDev(true).SetPort(options.Port).StopOnInterrupt()

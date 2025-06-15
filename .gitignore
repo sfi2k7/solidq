@@ -1,2 +1,4 @@
 cmd/solidserver/solidserver
 cmd/solidserver/solidserver.exe
+*.db
+cmd/dev/dev
